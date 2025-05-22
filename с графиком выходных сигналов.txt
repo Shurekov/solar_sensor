@@ -1,0 +1,183 @@
+import numpy as np
+import math
+from datetime import datetime, timedelta
+from astropy.time import Time
+import matplotlib.pyplot as plt
+
+# ====== Функции из j2_gravitational_acceleration.py ======
+def a_grav(dateTime, r0):
+    A = -19089.451590
+    B = 8640184.812866
+    C = 0.093104
+    D = -6.2e-6
+    JD0 = 2451545
+    JDD = 36525
+    DS2R = 7.272205216643039903848712e-5
+    J2 = 1.08262668355e-3
+    earth_radius = 6.378137e6
+    mu = 3.986004418e14  # м³/с²
+
+    JD = Time(dateTime).jd
+    t = (JD - JD0) / JDD
+    f = 86400 * (JD % 1.0)
+    alfa = DS2R * ((A + (B + (C + D * t) * t) * t) + f)
+    alfa = alfa % (2 * math.pi)
+    if alfa < 0:
+        alfa += 2 * math.pi
+
+    Mj2kGr = np.array([[math.cos(alfa), -math.sin(alfa), 0],
+                       [math.sin(alfa), math.cos(alfa), 0],
+                       [0, 0, 1]])
+
+    rGsk = np.dot(Mj2kGr, r0 * 1000)
+    rMod = np.sqrt(np.dot(rGsk, rGsk))
+    a_J2 = (-1.5 * J2 * (mu / rMod ** 2) * ((earth_radius / rMod) ** 2) *
+            np.array([(1 - 5 * (rGsk[2] / rMod) ** 2) * rGsk[0] / rMod,
+                      (1 - 5 * (rGsk[2] / rMod) ** 2) * rGsk[1] / rMod,
+                      (3 - 5 * (rGsk[2] / rMod) ** 2) * rGsk[2] / rMod]))
+
+    a_grav = np.dot(Mj2kGr.T, a_J2) / 1000
+    return a_grav
+
+# ====== Функция из check_shadow_status.py ======
+def CheckShadowStatus(dateTime, r0):
+    earth_radius = 6378.137  # км
+    eps = math.radians(23.43929111)
+    om = math.radians(282.940)
+    R_orbE = 149600000  # км
+
+    JD = Time(dateTime).jd
+    T = (JD - 2451545.0) / 36525.0
+    M = math.radians(357.5226 + 35999.049 * T)
+    lm = om + M + math.radians(6892 / 3600) * math.sin(M) + math.radians(72 / 60) * math.sin(2 * M)
+    rs = np.array([
+        math.cos(lm),
+        math.sin(lm) * math.cos(eps),
+        math.sin(lm) * math.sin(eps)
+    ]) * R_orbE
+
+    dif = rs - r0
+    phi = math.acos(np.dot(-r0, dif) / (np.linalg.norm(-r0) * np.linalg.norm(dif)))
+    eps_e = math.asin(earth_radius / np.linalg.norm(-r0))
+
+    return 1 if phi >= eps_e else 0
+
+# ====== Расчёт сигналов солнечного датчика ======
+def compute_sensor_signals(sun_dir_body, Imax=1.0):
+    sin_22 = math.sin(math.radians(22))
+    cos_22 = math.cos(math.radians(22))
+
+    normals = [
+        np.array([sin_22, 0, cos_22]),         # +X
+        np.array([sin_22, 0, -cos_22]),        # -X
+        np.array([sin_22, cos_22, 0]),         # +Y
+        np.array([sin_22, -cos_22, 0])         # -Y
+    ]
+
+    alpha_c_rad = np.arccos(np.dot([1, 0, 0], sun_dir_body))
+    alpha_c_deg = math.degrees(alpha_c_rad)
+
+    if alpha_c_deg >= 90:
+        return [0, 0, 0, 0]
+
+    if alpha_c_deg <= 74:
+        Kc = 1.0
+    elif 74 < alpha_c_deg < 90:
+        Kc = (90 - alpha_c_deg) / (90 - 74)
+    else:
+        Kc = 0.0
+
+    signals = []
+    for n in normals:
+        cos_eps = np.dot(n, sun_dir_body)
+        if cos_eps <= 0:
+            signals.append(0)
+            continue
+        eps_n_deg = math.degrees(np.arccos(cos_eps))
+        if eps_n_deg >= 83:
+            signals.append(0)
+        else:
+            signal = Imax * Kc * cos_eps
+            signals.append(signal)
+
+    return signals
+
+# ====== Начальные условия ======
+t0 = datetime(2024, 10, 1, 11, 0, 0)
+r0 = np.array([5666.282392, 3512.092276, -1780.014521])  # км
+v0 = np.array([2.194685, 0.146478, 7.275306])            # км/с
+
+endTime = 3600 * 12  # 12 часов
+dt = 10               # шаг интегрирования
+steps = int(endTime / dt) + 1
+mu = 398600.4415      # км³/с²
+
+output_data = []
+
+# ====== Цикл моделирования ======
+for i in range(steps):
+    current_time = t0 + timedelta(seconds=i * dt)
+
+    # Интегрирование методом Эйлера
+    r_norm = np.linalg.norm(r0)
+    a_central = -mu * r0 / r_norm ** 3
+    a_total = a_central + a_grav(current_time, r0)
+
+    r0 += v0 * dt
+    v0 += a_total * dt
+
+    # Проверка затенения
+    in_shadow = CheckShadowStatus(current_time, r0) == 0
+    if in_shadow:
+        continue
+
+    # Расчёт направления на Солнце в связанной СК
+    JD = Time(current_time).jd
+    T = (JD - 2451545.0) / 36525.0
+    M = math.radians(357.5226 + 35999.049 * T)
+    eps = math.radians(23.43929111)
+    om = math.radians(282.940)
+    lm = om + M + math.radians(6892 / 3600) * math.sin(M) + math.radians(72 / 60) * math.sin(2 * M)
+    R_orbE = 149600000
+    rs = np.array([
+        math.cos(lm),
+        math.sin(lm) * math.cos(eps),
+        math.sin(lm) * math.sin(eps)
+    ]) * R_orbE
+    sun_dir_j2k = (rs - r0) / np.linalg.norm(rs - r0)
+
+    # Переход к связанной системе координат КА
+    z_body = -r0 / np.linalg.norm(r0)
+    x_body = v0 / np.linalg.norm(v0)
+    y_body = np.cross(z_body, x_body)
+    Dcm_j2k_to_body = np.column_stack((x_body, y_body, z_body))
+    sun_dir_body = Dcm_j2k_to_body.T @ sun_dir_j2k
+    sun_dir_body /= np.linalg.norm(sun_dir_body)
+
+    # Расчёт сигналов датчиков
+    signals = compute_sensor_signals(sun_dir_body)
+
+    # Сохранение данных
+    output_data.append({
+        "time": current_time,
+        "signals": signals
+    })
+
+# ====== График сигналов датчиков ======
+times = [entry["time"] for entry in output_data]
+signals = np.array([entry["signals"] for entry in output_data])
+
+start_time = times[0]
+relative_times = [(t - start_time).total_seconds() for t in times]
+
+plt.figure(figsize=(14, 7))
+for i in range(4):
+    plt.plot(relative_times, signals[:, i], label=f"Датчик i{i+1}", linewidth=2)
+
+plt.title("Сигналы аналогового солнечного датчика во времени", fontsize=16)
+plt.xlabel("Время от начала моделирования, сек", fontsize=14)
+plt.ylabel("Сигнал (относительные единицы)", fontsize=14)
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()

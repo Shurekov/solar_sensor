@@ -42,3 +42,16 @@ def a_grav(dateTime, r0):
     # Ускорение от несфееричности в ИСК
     a_grav = np.dot(Mj2kGr.T, a_J2) / 1000
     return a_grav
+
+    # Расчёт координат Солнца
+    JD = Time(dateTime).jd  # Преобразование datetime в юлианскую дату
+    T = (JD - 2451545.0) / 36525.0 # Модифицированная Юлианская дата
+    M = math.radians(357.5226 + 35999.049 * T)  # Средняя аномалия
+    lm = om + M + math.radians(6892/3600)*math.sin(M) + math.radians(72/60)*math.sin(2*M)
+    rs = np.array([        math.cos(lm),
+                    math.sin(lm)*math.cos(eps),
+                    math.sin(lm)*math.sin(eps)]) * R_orbE
+
+    # Расчёт углов
+    dif = rs - r0 # Угол между вектором КА-Солнце и вектором КА-Земля
+    phi = math.acos(np.dot(-r0, dif) / (np.linalg.norm(r0) * np.linalg.norm(dif))) # Угол между КА и Солнцем

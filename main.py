@@ -1,58 +1,32 @@
 import numpy as np
-from datetime import datetime, timedelta
-from check_shadow_status import CheckShadowStatus
-from j2_gravitational_acceleration import a_grav
+from sun_sensor_model import sun_detector_model, normalize
 
-# Начальные условия
-t0 = datetime(2024, 10, 1, 11, 0, 0)
-r0 = np.array([5666.282392, 3512.092276, -1780.014521])  # км
-v0 = np.array([2.194685, 0.146478, 7.275306])            # км/с
 
-# Параметры интегрирования
-endTime = 86400  # 24 часа
-dt = 1           # шаг интегрирования, 1 секунда
+def quat_from_axis_angle(axis, angle_deg):
+    """Создаёт кватернион из оси и угла поворота."""
+    angle_rad = np.radians(angle_deg)
+    axis = normalize(np.array(axis))
+    return np.array([
+        np.cos(angle_rad / 2),
+        axis[0] * np.sin(angle_rad / 2),
+        axis[1] * np.sin(angle_rad / 2),
+        axis[2] * np.sin(angle_rad / 2)
+    ])
 
-# Константы
-mu = 398600.4415  # км³/с²
+if __name__ == "__main__":
+    # Направление на Солнце в связанной системе координат (ССК)
+    sun_ort_real_ssk = np.array([0.7, 0.7, 0.0])
 
-# Функция правой части уравнения движения
-def derivatives(t, state, dateTime):
-    r = state[:3]
-    v = state[3:]
+    # Кватернион ориентации КА: поворот вокруг оси Y на 50 градусов
+    craft_orient_quat = quat_from_axis_angle([0, 1, 0], 50)
 
-    rj2k = np.linalg.norm(r)
-    grav_acc = -(mu / rj2k**3) * r + a_grav(dateTime, r)
+    # Вызов модели датчика
+    result = sun_detector_model(sun_ort_real_ssk, craft_orient_quat)
 
-    drdt = v
-    dvdt = grav_acc
 
-    return np.concatenate((drdt, dvdt))
-
-# Метод Рунге–Кутты 4-го порядка
-def rk4_step(t, state, dt, dateTime):
-    k1 = dt * derivatives(t, state, dateTime)
-    k2 = dt * derivatives(t + dt/2, state + k1/2, dateTime + timedelta(seconds=dt//2))
-    k3 = dt * derivatives(t + dt/2, state + k2/2, dateTime + timedelta(seconds=dt//2))
-    k4 = dt * derivatives(t + dt, state + k3, dateTime + timedelta(seconds=dt))
-
-    return state + (k1 + 2*k2 + 2*k3 + k4) / 6
-
-# Интегрирование
-state = np.concatenate((r0, v0))  # объединяем состояние
-lighting = CheckShadowStatus(t0, r0)
-
-for i in range(int(endTime // dt)):
-    current_time = t0 + timedelta(seconds=i * dt)
-
-    # Интегрируем по RK4
-    state = rk4_step(i * dt, state, dt, current_time)
-
-    # Извлекаем новые значения r и v
-    r = state[:3]
-    v = state[3:]
-
-    # Проверка освещённости
-    currentLight = CheckShadowStatus(current_time, r)
-    if lighting != currentLight:
-        print(f"Переход {'в зону тени' if currentLight == 0 else 'в освещённую область'}. Время: {current_time}")
-        lighting = currentLight
+    # Вывод результатов
+    print("Направление на Солнце в ПСК:", result["sun_ort_real_psk"])
+    print("Измеренные токи:", result["currents"])
+    print("Угол визирования α_C (градусы):", result["alpha_C_deg"])
+    print("Азимут φ_s (градусы):", result["phi_s_deg"])
+    print("Коэффициент засветки Kc:", result["Kc"])
